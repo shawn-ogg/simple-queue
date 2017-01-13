@@ -1,0 +1,96 @@
+#!/bin/sh
+#
+# Bourne Shell implementation of a simple queue command.
+# This script comes in handy for hot-keys and the like.
+#
+# It does not support a timer or other means of job triggers
+# (e.g. system load).
+#
+# License: MIT
+# Copyright: Tobias Farrenkopf tf@emptyset.de
+
+set -o nounset
+
+NQUEUE="/tmp/${USER}_simple_queue"
+
+usage() {
+	echo "Usage: $(basename "$0") [COMMAND]"
+	echo 'Appends every COMMAND to a queue and executes them one by one.'
+	echo 'It reads COMMAND from standard input or from ARGS.'
+	echo
+	echo '-h, --help    display this help and exit'
+	echo '-q, --quit    terminate the queue process'
+	echo '-d            allow duplicate COMMAND in the queue'
+}
+
+echoerr() { echo "$@" 1>&2; }
+
+check_running() {
+	if [ -p "$NQUEUE" ] && $(ps x | grep -q "$0"); then
+		echo 1
+	else
+		echo 0
+	fi
+}
+
+run_loop() {
+	last_job=
+	# read from the named pipe. The first char (duplicate flag)
+	# is removed from the job and evaluated.
+	while read job <"$NQUEUE"
+	do
+		skip_duplicate=${job%${job#?}}
+		job=${job#?}
+		if [ "$skip_duplicate" -eq 1 ] && [ "$job" = "$last_job" ]; then
+			echoerr "WARN: skipping duplicate job"
+		elif [ -n "$job" ]; then
+			last_job="$job"
+			eval "$job"
+		fi
+		sleep .2
+	done
+}
+
+# Main
+#
+skip_duplicate=1
+
+# fork the run_loop if not running
+if [ $(check_running) -eq 0 ]; then
+	rm -f "$NQUEUE"
+	mkfifo "$NQUEUE" || exit 1
+	run_loop &
+fi
+
+if [ ! -p "$NQUEUE" ]; then
+	echoerr "ERROR: ${NQUEUE} is not a named pipe. Abort!"
+	exit 1
+fi
+
+# check for options
+if [ $# -ne 0 ]; then
+	if [ "$1" = "-h" ] || [ "$1" = "--help" ]; then
+		usage
+		exit 0
+	elif [ "$1" = '-q' ] || [ "$1" = "--quit" ]; then
+		echo 'Done processing jobs'
+		rm -f "$NQUEUE"
+		exit 0
+	elif [ "$1" = "-d" ]; then
+		skip_duplicate=0
+		shift
+	elif [ ${1%${1#?}} = "-" ]; then
+		echoerr "Invalid option ${1}"
+		echoerr "Try '$(basename ${0}) --help' for more information."
+		exit 1
+	fi
+fi
+
+if [ $# -ne 0 ]; then
+	echo "${skip_duplicate}${@}" > "$NQUEUE"
+else
+	while read LINE; do
+		echo "${skip_duplicate}${LINE}" > "$NQUEUE"
+	done
+fi
+
